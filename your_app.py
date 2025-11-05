@@ -12,8 +12,9 @@ from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
 from itertools import permutations
 
 # ================== CONFIG ==================
-MIN_DIMS = np.array([1.0, 1.0, 0.5])
-MAX_DIMS = np.array([36.0, 36.0, 18.0])  # max limits for safe packing
+# Removed as requested
+# MIN_DIMS = np.array([1.0, 1.0, 0.5])
+# MAX_DIMS = np.array([36.0, 36.0, 18.0])  # max limits for safe packing
 
 # ================== AUTO-DETECTION ==================
 def find_file(keyword, folder="."):
@@ -84,8 +85,8 @@ if uploaded_file:
         elif calibration.shape == (3,):
             preds = preds * calibration
 
-    # Clamp dimensions
-    preds = np.clip(preds, MIN_DIMS, MAX_DIMS)
+    # Clamp dimensions (Removed as requested)
+    # preds = np.clip(preds, MIN_DIMS, MAX_DIMS)
 
     # ================== DISPLAY PREDICTIONS ==================
     st.subheader("Predicted Dimensions (in inches)")
@@ -113,16 +114,16 @@ if uploaded_file:
                 break  # only need one orientation to fit
 
     if fits:
-        best_box = min(fits, key=lambda b: b["L"] * b["W"] * b["H"])
+        best_box = min(fits, key=lambda b: b["L"] * b["W"] * b.get("H", 1)) # .get("H", 1) for safety
         st.success(
             f"🎯 Recommended Standard Box: **{best_box['name']}** ({best_box['L']}×{best_box['W']}×{best_box['H']} in)"
         )
     else:
-        # Custom box with 5% margin
+        # Custom box with 5% margin (Removed MAX_DIMS limit)
         custom_box = {
-            "L": min(preds[0] * 1.05, MAX_DIMS[0]),
-            "W": min(preds[1] * 1.05, MAX_DIMS[1]),
-            "H": min(preds[2] * 1.05, MAX_DIMS[2]),
+            "L": preds[0] * 1.05,
+            "W": preds[1] * 1.05,
+            "H": preds[2] * 1.05,
         }
         st.warning(
             f"🚨 No standard box fits this product.\n"
