@@ -6,6 +6,7 @@ AI Packaging Optimizer - Streamlit App
 ✅ Detects invalid datasets (like Python files)
 ✅ Allows image upload & predicts dimensions
 ✅ Recommends optimal box size (standard or custom)
+✅ Clamps extreme predictions for realism
 """
 
 import os
@@ -18,7 +19,6 @@ from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
 
 # ================== AUTO-DETECTION ==================
 def find_file(keyword, folder="."):
-    """Find a file by keyword in the current directory."""
     for f in os.listdir(folder):
         if keyword.lower() in f.lower():
             return os.path.join(folder, f)
@@ -49,8 +49,7 @@ def load_model(path):
     if not path or not os.path.exists(path):
         st.error("❌ Model file not found!")
         st.stop()
-    model = tf.keras.models.load_model(path)
-    return model
+    return tf.keras.models.load_model(path)
 
 model = load_model(MODEL_PATH)
 
@@ -60,15 +59,13 @@ def load_calibration(file):
         factors = np.load(file)
         st.success("✅ Calibration factors loaded.")
         return factors
-    else:
-        st.warning("⚠️ No calibration file found. Predictions will be raw.")
-        return None
+    st.warning("⚠️ No calibration file found. Predictions will be raw.")
+    return None
 
 calibration = load_calibration(CALIBRATION_FILE)
 
 # ================== SAFE DATASET LOADER ==================
 def safe_load_csv(path):
-    """Safely load a CSV with auto delimiter handling."""
     if not path or not os.path.exists(path):
         st.info("📁 No dataset detected. Upload one below.")
         return None
@@ -76,22 +73,18 @@ def safe_load_csv(path):
         df = pd.read_csv(path, sep="\t", engine="python", on_bad_lines="skip")
         if df.shape[1] == 1:
             df = pd.read_csv(path, sep=",", engine="python", on_bad_lines="skip")
-
         if df.shape[1] < 3:
             st.error("❌ This file doesn’t look like a valid dataset (too few columns).")
             return None
-
         df.columns = [c.strip().lower() for c in df.columns]
         st.success(f"✅ Loaded dataset with {len(df)} rows and {len(df.columns)} columns.")
         return df
-
     except Exception as e:
         st.error(f"❌ Could not load dataset: {e}")
         return None
 
 df = safe_load_csv(DATASET_FILE)
 
-# Allow manual dataset upload if needed
 if df is None:
     uploaded_csv = st.file_uploader("📤 Upload a valid dataset CSV", type=["csv"])
     if uploaded_csv:
@@ -109,7 +102,6 @@ if df is not None:
         if all(c in df.columns for c in cols):
             found_cols = cols
             break
-
     if found_cols:
         stats = df.describe()[found_cols]
         st.dataframe(stats)
@@ -125,7 +117,6 @@ if uploaded_file:
     img_path = f"temp_{uploaded_file.name}"
     with open(img_path, "wb") as f:
         f.write(uploaded_file.getbuffer())
-
     st.image(img_path, caption="Uploaded Image", use_container_width=True)
 
     # Preprocess
@@ -138,12 +129,16 @@ if uploaded_file:
     with st.spinner("⏳ Predicting dimensions..."):
         preds = model.predict(x, verbose=0)[0]
         preds = np.array(preds)
-
         if calibration is not None:
-            if calibration.shape == (3, 2):  # linear (scale, bias)
+            if calibration.shape == (3, 2):
                 preds = preds * calibration[:, 0] + calibration[:, 1]
             elif calibration.shape == (3,):
                 preds = preds * calibration
+
+    # ================== CLAMP DIMENSIONS ==================
+    MIN_DIMS = np.array([1.0, 1.0, 0.5])    # L, W, H min
+    MAX_DIMS = np.array([36.0, 36.0, 12.0]) # L, W, H max
+    preds = np.clip(preds, MIN_DIMS, MAX_DIMS)
 
     # Show predictions
     st.success("✅ Prediction complete!")
@@ -173,11 +168,10 @@ if uploaded_file:
         best_box = min(fits, key=lambda b: b["L"] * b["W"] * b["H"])
         st.info(f"🎯 Recommended Box: **{best_box['name']}** ({best_box['L']}×{best_box['W']}×{best_box['H']} in)")
     else:
-        # Suggest a custom box with 5% extra dimensions
         custom_box = {
-            "L": preds[0] * 1.05,
-            "W": preds[1] * 1.05,
-            "H": preds[2] * 1.05,
+            "L": min(preds[0] * 1.05, MAX_DIMS[0]),
+            "W": min(preds[1] * 1.05, MAX_DIMS[1]),
+            "H": min(preds[2] * 1.05, MAX_DIMS[2]),
         }
         st.warning(
             f"🚨 No standard box fits this product.\n"
