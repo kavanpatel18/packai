@@ -5,7 +5,7 @@ AI Packaging Optimizer - Streamlit App
 ✅ Handles tab or comma-separated CSVs safely
 ✅ Detects invalid datasets (like Python files)
 ✅ Allows image upload & predicts dimensions
-✅ Recommends optimal box size
+✅ Recommends optimal box size (standard or custom)
 """
 
 import os
@@ -24,9 +24,8 @@ def find_file(keyword, folder="."):
             return os.path.join(folder, f)
     return None
 
-MODEL_PATH = "packaging_dim_model_finetuned.keras"
-CALIBRATION_FILE = "calibration_factors_linear.npy"  # optional
-
+MODEL_PATH = find_file("packaging_dim_model") or find_file("model")
+CALIBRATION_FILE = find_file("calibration_factors")
 DATASET_FILE = None
 for f in os.listdir("."):
     if f.endswith(".csv") and "dataset" in f.lower():
@@ -74,12 +73,10 @@ def safe_load_csv(path):
         st.info("📁 No dataset detected. Upload one below.")
         return None
     try:
-        # Try tab first, then comma
         df = pd.read_csv(path, sep="\t", engine="python", on_bad_lines="skip")
         if df.shape[1] == 1:
             df = pd.read_csv(path, sep=",", engine="python", on_bad_lines="skip")
 
-        # Ensure dataset validity
         if df.shape[1] < 3:
             st.error("❌ This file doesn’t look like a valid dataset (too few columns).")
             return None
@@ -158,7 +155,7 @@ if uploaded_file:
     volume = preds[0] * preds[1] * preds[2]
     st.markdown(f"### 📦 Volume ≈ {volume:.1f} cubic inches")
 
-    # Recommend box size
+    # ================== RECOMMEND BOX SIZE ==================
     standard_boxes = [
         {"name": "Small", "L": 8, "W": 6, "H": 4},
         {"name": "Medium", "L": 12, "W": 10, "H": 8},
@@ -166,12 +163,26 @@ if uploaded_file:
         {"name": "XL", "L": 24, "W": 18, "H": 12},
         {"name": "XXL", "L": 30, "W": 24, "H": 18},
     ]
-    fits = [b for b in standard_boxes if all(preds[i] <= b[d] for i, d in enumerate(["L", "W", "H"]))]
+
+    fits = [
+        b for b in standard_boxes
+        if all(preds[i] <= b[d] for i, d in enumerate(["L", "W", "H"]))
+    ]
+
     if fits:
         best_box = min(fits, key=lambda b: b["L"] * b["W"] * b["H"])
         st.info(f"🎯 Recommended Box: **{best_box['name']}** ({best_box['L']}×{best_box['W']}×{best_box['H']} in)")
     else:
-        st.warning("🚫 No standard box found that fits this product.")
+        # Suggest a custom box with 5% extra dimensions
+        custom_box = {
+            "L": preds[0] * 1.05,
+            "W": preds[1] * 1.05,
+            "H": preds[2] * 1.05,
+        }
+        st.warning(
+            f"🚨 No standard box fits this product.\n"
+            f"📦 Recommended custom box: {custom_box['L']:.1f}×{custom_box['W']:.1f}×{custom_box['H']:.1f} in"
+        )
 
     os.remove(img_path)
 
