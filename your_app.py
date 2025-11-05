@@ -1,21 +1,19 @@
 """
-AI Packaging Optimizer - Streamlit App
---------------------------------------
-✅ Auto-detects model, calibration, and dataset
-✅ Handles tab or comma-separated CSVs safely
-✅ Detects invalid datasets (like Python files)
-✅ Allows image upload & predicts dimensions
-✅ Recommends optimal box size (standard or custom)
-✅ Clamps extreme predictions for realism
+📦 AI Packaging Optimizer
+Optimized & visually appealing student-style app
 """
 
 import os
 import numpy as np
-import pandas as pd
 import tensorflow as tf
 import streamlit as st
 from tensorflow.keras.preprocessing import image
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
+from itertools import permutations
+
+# ================== CONFIG ==================
+MIN_DIMS = np.array([1.0, 1.0, 0.5])
+MAX_DIMS = np.array([36.0, 36.0, 18.0])  # max limits for safe packing
 
 # ================== AUTO-DETECTION ==================
 def find_file(keyword, folder="."):
@@ -26,22 +24,20 @@ def find_file(keyword, folder="."):
 
 MODEL_PATH = find_file("packaging_dim_model") or find_file("model")
 CALIBRATION_FILE = find_file("calibration_factors")
-DATASET_FILE = None
-for f in os.listdir("."):
-    if f.endswith(".csv") and "dataset" in f.lower():
-        DATASET_FILE = f
-        break
 
 # ================== STREAMLIT UI ==================
 st.set_page_config(page_title="AI Packaging Optimizer", layout="centered")
+st.image("https://img.icons8.com/emoji/48/000000/package-emoji.png", width=60)
 st.title("📦 AI Packaging Optimizer")
-st.caption("Estimate real-world package dimensions and suggest optimal box fit.")
+st.subheader("Estimate product dimensions and find the optimal box")
 
-# Sidebar info
-st.sidebar.header("🧠 Configuration")
-st.sidebar.write(f"**Model:** {MODEL_PATH or '❌ Not found'}")
-st.sidebar.write(f"**Calibration:** {CALIBRATION_FILE or '❌ Not found'}")
-st.sidebar.write(f"**Dataset:** {DATASET_FILE or '❌ Not found'}")
+# Sidebar instructions
+st.sidebar.header("How to use")
+st.sidebar.write("""
+1. Upload a product image (JPG/PNG)
+2. AI predicts Length, Width, Height
+3. See the recommended box (standard or custom)
+""")
 
 # ================== LOAD MODEL ==================
 @st.cache_resource
@@ -57,117 +53,72 @@ model = load_model(MODEL_PATH)
 def load_calibration(file):
     if file and os.path.exists(file):
         factors = np.load(file)
-        st.success("✅ Calibration factors loaded.")
+        st.success("✅ Calibration loaded")
         return factors
     st.warning("⚠️ No calibration file found. Predictions will be raw.")
     return None
 
 calibration = load_calibration(CALIBRATION_FILE)
 
-# ================== SAFE DATASET LOADER ==================
-def safe_load_csv(path):
-    if not path or not os.path.exists(path):
-        st.info("📁 No dataset detected. Upload one below.")
-        return None
-    try:
-        df = pd.read_csv(path, sep="\t", engine="python", on_bad_lines="skip")
-        if df.shape[1] == 1:
-            df = pd.read_csv(path, sep=",", engine="python", on_bad_lines="skip")
-        if df.shape[1] < 3:
-            st.error("❌ This file doesn’t look like a valid dataset (too few columns).")
-            return None
-        df.columns = [c.strip().lower() for c in df.columns]
-        st.success(f"✅ Loaded dataset with {len(df)} rows and {len(df.columns)} columns.")
-        return df
-    except Exception as e:
-        st.error(f"❌ Could not load dataset: {e}")
-        return None
-
-df = safe_load_csv(DATASET_FILE)
-
-if df is None:
-    uploaded_csv = st.file_uploader("📤 Upload a valid dataset CSV", type=["csv"])
-    if uploaded_csv:
-        df = safe_load_csv(uploaded_csv)
-
-# ================== DATASET OVERVIEW ==================
-if df is not None:
-    st.subheader("📊 Dataset Overview")
-    possible_cols = [
-        ["product_length", "product_width", "product_height"],
-        ["length", "width", "height"]
-    ]
-    found_cols = None
-    for cols in possible_cols:
-        if all(c in df.columns for c in cols):
-            found_cols = cols
-            break
-    if found_cols:
-        stats = df.describe()[found_cols]
-        st.dataframe(stats)
-        st.bar_chart(stats.loc[["mean", "max"]])
-    else:
-        st.warning(f"⚠️ No dimension columns found. Columns available: {list(df.columns)}")
-
-# ================== IMAGE UPLOAD & PREDICTION ==================
-st.subheader("📷 Upload Product Image")
-uploaded_file = st.file_uploader("Drag and drop an image here", type=["jpg", "jpeg", "png"])
+# ================== IMAGE UPLOAD ==================
+uploaded_file = st.file_uploader("Upload product image (JPG/PNG)", type=["jpg", "jpeg", "png"])
 
 if uploaded_file:
     img_path = f"temp_{uploaded_file.name}"
     with open(img_path, "wb") as f:
         f.write(uploaded_file.getbuffer())
-    st.image(img_path, caption="Uploaded Image", use_container_width=True)
+    st.image(img_path, caption="Uploaded Image", use_column_width=True)
 
-    # Preprocess
+    # ================== PREDICT DIMENSIONS ==================
     img = image.load_img(img_path, target_size=(224, 224))
     x = image.img_to_array(img)
     x = np.expand_dims(x, axis=0)
     x = preprocess_input(x)
 
-    # Predict
-    with st.spinner("⏳ Predicting dimensions..."):
-        preds = model.predict(x, verbose=0)[0]
-        preds = np.array(preds)
-        if calibration is not None:
-            if calibration.shape == (3, 2):
-                preds = preds * calibration[:, 0] + calibration[:, 1]
-            elif calibration.shape == (3,):
-                preds = preds * calibration
+    preds = model.predict(x, verbose=0)[0]
+    preds = np.array(preds)
 
-    # ================== CLAMP DIMENSIONS ==================
-    MIN_DIMS = np.array([1.0, 1.0, 0.5])    # L, W, H min
-    MAX_DIMS = np.array([36.0, 36.0, 12.0]) # L, W, H max
+    if calibration is not None:
+        if calibration.shape == (3, 2):
+            preds = preds * calibration[:, 0] + calibration[:, 1]
+        elif calibration.shape == (3,):
+            preds = preds * calibration
+
+    # Clamp dimensions
     preds = np.clip(preds, MIN_DIMS, MAX_DIMS)
 
-    # Show predictions
-    st.success("✅ Prediction complete!")
+    # ================== DISPLAY PREDICTIONS ==================
+    st.subheader("Predicted Dimensions (in inches)")
     col1, col2, col3 = st.columns(3)
-    col1.metric("📏 Length (in)", f"{preds[0]:.2f}")
-    col2.metric("📏 Width (in)", f"{preds[1]:.2f}")
-    col3.metric("📏 Height (in)", f"{preds[2]:.2f}")
+    col1.metric("📏 Length", f"{preds[0]:.2f}")
+    col2.metric("📏 Width", f"{preds[1]:.2f}")
+    col3.metric("📏 Height", f"{preds[2]:.2f}")
 
-    volume = preds[0] * preds[1] * preds[2]
-    st.markdown(f"### 📦 Volume ≈ {volume:.1f} cubic inches")
-
-    # ================== RECOMMEND BOX SIZE ==================
+    # ================== STANDARD BOXES ==================
     standard_boxes = [
         {"name": "Small", "L": 8, "W": 6, "H": 4},
         {"name": "Medium", "L": 12, "W": 10, "H": 8},
-        {"name": "Large", "L": 18, "W": 14, "H": 10},
-        {"name": "XL", "L": 24, "W": 18, "H": 12},
-        {"name": "XXL", "L": 30, "W": 24, "H": 18},
+        {"name": "Large", "L": 16, "W": 12, "H": 10},
+        {"name": "XL", "L": 20, "W": 16, "H": 12},
+        {"name": "XXL", "L": 24, "W": 18, "H": 14},
+        {"name": "XXXL", "L": 30, "W": 24, "H": 18},
     ]
 
-    fits = [
-        b for b in standard_boxes
-        if all(preds[i] <= b[d] for i, d in enumerate(["L", "W", "H"]))
-    ]
+    # ================== FIND FITTING BOXES ==================
+    fits = []
+    for box in standard_boxes:
+        for perm in permutations(preds):
+            if all(perm[i] <= box[d] for i, d in enumerate(["L", "W", "H"])):
+                fits.append(box)
+                break  # only need one orientation to fit
 
     if fits:
         best_box = min(fits, key=lambda b: b["L"] * b["W"] * b["H"])
-        st.info(f"🎯 Recommended Box: **{best_box['name']}** ({best_box['L']}×{best_box['W']}×{best_box['H']} in)")
+        st.success(
+            f"🎯 Recommended Standard Box: **{best_box['name']}** ({best_box['L']}×{best_box['W']}×{best_box['H']} in)"
+        )
     else:
+        # Custom box with 5% margin
         custom_box = {
             "L": min(preds[0] * 1.05, MAX_DIMS[0]),
             "W": min(preds[1] * 1.05, MAX_DIMS[1]),
@@ -175,10 +126,10 @@ if uploaded_file:
         }
         st.warning(
             f"🚨 No standard box fits this product.\n"
-            f"📦 Recommended custom box: {custom_box['L']:.1f}×{custom_box['W']:.1f}×{custom_box['H']:.1f} in"
+            f"📦 Recommended Custom Box: {custom_box['L']:.1f}×{custom_box['W']:.1f}×{custom_box['H']:.1f} in"
         )
 
     os.remove(img_path)
 
 st.markdown("---")
-st.caption("AI Packaging Optimizer © 2025 – Powered by TensorFlow & Streamlit")
+st.caption("AI Packaging Optimizer © 2025 – 😎")
